@@ -1,7 +1,11 @@
+from enum import StrEnum, auto
+from datetime import timedelta, datetime, timezone
+from typing import Optional, List
 import bcrypt
 import jwt
-from fastapi import FastAPI, HTTPException, Depends, status, Body
+from fastapi import FastAPI, HTTPException, Depends, status, Body, APIRouter
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr, Field, validator
 import psycopg2
 import uvicorn
 import hashlib
@@ -12,14 +16,14 @@ from pathlib import Path
 from fastapi import UploadFile, File
 import shutil
 from fastapi.staticfiles import StaticFiles
-from kinopoisk_unofficial.kinopoisk_api_client import KinopoiskApiClient
-from kinopoisk_unofficial.request.films.search_by_keyword_request import SearchByKeywordRequest
-from kinopoisk_unofficial.request.films.film_request import FilmRequest
-from kinopoisk_unofficial.response.films.film_response import FilmResponse
-from kinopoisk_unofficial.response.films.search_by_keyword_response import SearchByKeywordResponse
 import asyncio
 from typing import Dict, List
-from models import *
+from kinopoisk_api import kinopoisk_api
+import random
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from datetime import datetime
+import random
+import time
 
 SECRET_KEY = ""
 ALGORITHM = "HS256"
@@ -27,16 +31,16 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 KINOPOISK_TOKEN = ""
 VOTE_TIME_SECONDS = 120 
-ROULETTE_SPIN_TIME = 20 
+ROULETTE_SPIN_TIME = 10 
 
-kinopoisk_client = KinopoiskApiClient(KINOPOISK_TOKEN)
+#kinopoisk_client = KinopoiskApiClient(KINOPOISK_TOKEN)
 
 db_conn_dict = {
     'database': '',
     'user': '',
     'password': '',
     'host': '',
-    'port': 5432,
+    'port': '',
     'options': "-c search_path=cinema"
 }
 
@@ -46,6 +50,147 @@ app = FastAPI()
 os.makedirs("uploads/profile_pictures", exist_ok=True)
 
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
+
+class UserBase(BaseModel):
+    email: EmailStr
+    name: str
+
+    @validator('name')
+    def validate_name_length(cls, v):
+        if len(v) < 1 or len(v) > 15:
+            raise ValueError('Имя должно быть от 1 до 15 символов')
+        return v
+
+class UserSignUp(UserBase):
+    password: str
+
+class UserRead(UserBase):
+    id: int
+
+class User(UserRead):
+    hashed_password: str
+
+class RoomCreate(BaseModel):
+    name: str
+    
+    @validator('name')
+    def validate_name_length(cls, v):
+        if len(v) < 1 or len(v) > 15:
+            raise ValueError('Название комнаты должно быть от 1 до 15 символов')
+        return v
+
+class RoomResponse(BaseModel):
+    id: int
+    owner_id: int
+    name: str
+    status: str
+    created_at: datetime
+    is_open: bool
+    access_code: Optional[str] = None
+    participants: List[UserRead] = Field(default_factory=list)
+
+class ParticipantInfo(BaseModel):
+    id: int
+    name: str
+    email: str
+    role: str
+    is_current_user: bool
+    is_owner: bool
+
+class RoomParticipantsResponse(BaseModel):
+    room_id: int
+    room_name: str
+    owner_id: int
+    participants: List[ParticipantInfo]
+
+class UserStats(BaseModel):
+    movies_suggested: int
+    movies_selected: int
+    total_ratings_received: int
+
+class UserInfoResponse(BaseModel):
+    user: UserRead
+    stats: UserStats
+
+class RoomStatus(StrEnum):
+    COLLECTING = "collecting"
+    ROULETTE = "roulette"
+    WATCHING = "watching"
+    REVIEWING = "reviewing"
+    FINISHED = "finished"
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    profile_picture: Optional[str] = None
+
+    @validator('name')
+    def validate_name_length(cls, v):
+        if v is not None and (len(v) < 1 or len(v) > 15):
+            raise ValueError('Имя должно быть от 1 до 15 символов')
+        return v
+
+    @validator('profile_picture')
+    def validate_profile_picture(cls, v):
+        if v is not None and len(v) > 255:
+            raise ValueError('URL картинки слишком длинный')
+        return v
+
+class UserProfileResponse(UserRead):
+    profile_picture: Optional[str] = None
+    registered_at: datetime
+    overall_rating: float
+    is_active: bool
+
+class UserProfileUpdateResponse(BaseModel):
+    message: str
+    user: UserProfileResponse
+
+class MovieSuggestion(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
+class MovieInfo(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    duration: Optional[int] = None
+    release_year: Optional[int] = None
+    poster_url: Optional[str] = None
+    rating_kp: Optional[float] = None
+    votes_kp: Optional[int] = None
+    genres: List[str] = []
+
+class RouletteResult(BaseModel):
+    room_id: int
+    selected_movie: MovieInfo
+    selected_user_id: int
+    selected_user_name: str
+    candidates_count: int
+    spin_duration: int
+
+class ReviewCreate(BaseModel):
+    rating: int = Field(..., ge=1, le=10, description="Оценка от 1 до 10")
+    comment: Optional[str] = Field(None, max_length=500)
+
+class ReviewResponse(BaseModel):
+    id: int
+    movie_id: int
+    room_id: int
+    from_user_id: int
+    to_user_id: int
+    rating: int
+    comment: Optional[str]
+    reviewed_at: datetime
+    
+    movie_title: str
+    from_user_name: str
+    to_user_name: str
+
+class RoomReviewsResponse(BaseModel):
+    movie: dict  
+    suggested_by: dict  
+    reviews: dict  
+    has_user_reviewed: bool
+
 
 def get_hashed_password(plain_text_password: bytes) -> bytes:
     return bcrypt.hashpw(plain_text_password, bcrypt.gensalt())
@@ -172,30 +317,23 @@ def delete_old_profile_picture(picture_url: str):
 async def search_movie_by_keyword(keyword: str) -> Optional[MovieInfo]:
     """Поиск фильма по ключевому слову через Kinopoisk API"""
     try:
-        request = SearchByKeywordRequest(keyword)
-        response = kinopoisk_client.films.send_search_by_keyword_request(request)
+        movie_data = await kinopoisk_api.search_movie_by_keyword(keyword)
         
-        if response.items and len(response.items) > 0:
-            film = response.items[0]  # Берем первый результат
-            
-            # Получаем детальную информацию по ID
-            film_request = FilmRequest(film.kinopoisk_id)
-            film_response = kinopoisk_client.films.send_film_request(film_request)
-            
-            # Преобразуем в нашу модель
+        if movie_data:
             return MovieInfo(
-                id=film_response.kinopoisk_id,
-                title=film_response.name_ru or film_response.name_original or "Без названия",
-                description=film_response.description or "",
-                duration=film_response.film_length,
-                release_year=film_response.year,
-                poster_url=film_response.poster_url,
-                rating_kp=film_response.rating_kinopoisk,
-                votes_kp=film_response.rating_kinopoisk_vote_count,
-                genres=[genre.genre for genre in film_response.genres]
+                id=movie_data["id"],
+                title=movie_data["title"],
+                description=movie_data["description"],
+                duration=movie_data["duration"],
+                release_year=movie_data["release_year"],
+                poster_url=movie_data["poster_url"],
+                rating_kp=movie_data["rating_kp"],
+                votes_kp=movie_data["votes_kp"],
+                genres=movie_data["genres"]
             )
     except Exception as e:
         print(f"Ошибка при поиске фильма '{keyword}': {str(e)}")
+    
     return None
 
 def save_movie_to_db(movie: MovieInfo, suggested_by_user_id: int, room_id: int):
@@ -1445,7 +1583,7 @@ async def suggest_movie(
                 if not movie_info:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Фильм не найден. Попробуйте другое название"
+                        detail="Фильм не найден. Попробуйте другое название или проверьте API ключ"
                     )
                 
                 # Сохраняем фильм в БД
@@ -1500,17 +1638,222 @@ async def suggest_movie(
             detail=f"Ошибка при предложении фильма: {str(e)}"
         )
 
+#router = APIRouter(prefix="/api/rooms", tags=["rooms"])
+
+# Глобальная переменная для отслеживания запущенных рулеток
+active_roulettes = {}
+
 @app.post("/rooms/{room_id}/start-roulette")
-def start_roulette(room_id: int, user: User = Depends(get_current_user)):
-    """Запустить рулетку выбора фильма (только владелец комнаты)"""
+def start_roulette(
+    room_id: int,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user)
+):
+    """Запустить рулетку выбора фильма"""
+    try:
+        # Проверяем, не запущена ли уже
+        if room_id in active_roulettes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Рулетка уже запущена для этой комнаты"
+            )
+        
+        # Ваши настройки БД
+        db_conn_dict = {
+            'database': 'postgres',
+            'user': 'postgres',
+            'password': 'Danil',
+            'host': 'localhost',
+            'port': 5432,
+            'options': "-c search_path=cinema"
+        }
+        
+        with psycopg2.connect(**db_conn_dict) as conn:
+            with conn.cursor() as cur:
+                # Проверяем владельца
+                cur.execute(
+                    'SELECT owner_id, status, name FROM cinema.room WHERE id = %s',
+                    (room_id,)
+                )
+                room = cur.fetchone()
+                
+                if not room:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Комната не найдена"
+                    )
+                
+                owner_id, room_status, room_name = room
+                
+                if user.id != owner_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Только владелец может запустить рулетку"
+                    )
+                
+                if room_status != 'collecting':
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Невозможно запустить рулетку. Статус: {room_status}"
+                    )
+                
+                # Проверяем количество фильмов
+                cur.execute(
+                    'SELECT COUNT(*) FROM cinema.suggested_movie WHERE room_id = %s AND is_active = TRUE',
+                    (room_id,)
+                )
+                movies_count = cur.fetchone()[0]
+                
+                if movies_count < 2:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Нужно минимум 2 фильма. Сейчас: {movies_count}"
+                    )
+                
+                # Обновляем статус комнаты
+                roulette_start_time = datetime.now()
+                cur.execute(
+                    'UPDATE cinema.room SET status = %s, roulette_starts_at = %s WHERE id = %s',
+                    ('roulette', roulette_start_time, room_id)
+                )
+                
+                conn.commit()
+                
+                # Добавляем в активные
+                active_roulettes[room_id] = True
+                
+                # Запускаем фоновую задачу
+                background_tasks.add_task(
+                    run_roulette_background_task,
+                    room_id=room_id,
+                    start_time=roulette_start_time
+                )
+                
+                return {
+                    "message": "🎰 Рулетка запущена! Результат будет через 10 секунд",
+                    "room_id": room_id,
+                    "room_name": room_name,
+                    "roulette_starts_at": roulette_start_time.isoformat(),
+                    "movies_count": movies_count,
+                    "spin_duration": 10,
+                    "status": "roulette"
+                }
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        active_roulettes.pop(room_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при запуске рулетки: {str(e)}"
+        )
+
+def run_roulette_background_task(room_id: int, start_time: datetime):
+    """Фоновая задача для выбора фильма"""
+    try:
+        print(f"⏳ Фоновая рулетка запущена для комнаты {room_id}")
+        
+        # Ждем 10 секунд
+        time.sleep(10)
+        
+        print(f"🎲 Завершение рулетки для комнаты {room_id}...")
+        
+        with psycopg2.connect(**db_conn_dict) as conn:
+            with conn.cursor() as cur:
+                # Получаем предложенные фильмы
+                cur.execute(
+                    '''
+                    SELECT sm.id, sm.movie_id, sm.user_id, m.title, u.name
+                    FROM cinema.suggested_movie sm
+                    JOIN cinema.movie m ON sm.movie_id = m.id
+                    JOIN cinema.user u ON sm.user_id = u.id
+                    WHERE sm.room_id = %s AND sm.is_active = TRUE
+                    ''',
+                    (room_id,)
+                )
+                suggestions = cur.fetchall()
+                
+                if not suggestions:
+                    print(f"⚠️ Нет предложений, сбрасываем статус")
+                    cur.execute(
+                        'UPDATE cinema.room SET status = %s WHERE id = %s',
+                        ('collecting', room_id)
+                    )
+                    conn.commit()
+                    return
+                
+                # Выбираем случайный фильм
+                selected = random.choice(suggestions)
+                suggestion_id, movie_id, user_id, movie_title, user_name = selected
+                
+                print(f"🎉 Выбран: '{movie_title}' от {user_name}")
+                
+                # Обновляем комнату
+                cur.execute(
+                    '''
+                    UPDATE cinema.room 
+                    SET status = 'watching', 
+                        selected_movie_id = %s, 
+                        selected_user_id = %s,
+                        watching_starts_at = %s
+                    WHERE id = %s
+                    ''',
+                    (movie_id, user_id, datetime.now(), room_id)
+                )
+                
+                # История рулетки
+                cur.execute(
+                    '''
+                    INSERT INTO cinema.roulette_history 
+                    (room_id, selected_movie_id, selected_user_id, 
+                     candidates_count, roulette_at, spin_duration)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ''',
+                    (room_id, movie_id, user_id, len(suggestions), datetime.now(), 10)
+                )
+                
+                # Обновляем статистику
+                cur.execute(
+                    'UPDATE cinema.user_statistic SET movies_selected = movies_selected + 1 WHERE user_id = %s',
+                    (user_id,)
+                )
+                
+                conn.commit()
+                print(f"✅ Рулетка завершена для комнаты {room_id}")
+                
+    except Exception as e:
+        print(f"❌ Ошибка в фоновой задаче: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Убираем комнату из активных
+        active_roulettes.pop(room_id, None)
+
+@app.get("/rooms/{room_id}/roulette-status")
+def get_roulette_status(room_id: int, user: User = Depends(get_current_user)):
+    """Получить статус рулетки"""
     try:
         with psycopg2.connect(**db_conn_dict) as conn:
             with conn.cursor() as cur:
-                # Проверяем, что пользователь является владельцем комнаты
+                # Проверяем, что пользователь является участником комнаты
                 cur.execute(
                     '''
-                    SELECT owner_id, status FROM cinema.room 
-                    WHERE id = %s
+                    SELECT 1 FROM cinema.room_participant 
+                    WHERE room_id = %s AND user_id = %s AND is_active = TRUE
+                    ''',
+                    (room_id, user.id)
+                )
+                if not cur.fetchone():
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Вы не участник этой комнаты"
+                    )
+                
+                # Получаем информацию о комнате
+                cur.execute(
+                    '''
+                    SELECT status, roulette_starts_at, selected_movie_id, name
+                    FROM cinema.room WHERE id = %s
                     ''',
                     (room_id,)
                 )
@@ -1522,80 +1865,53 @@ def start_roulette(room_id: int, user: User = Depends(get_current_user)):
                         detail="Комната не найдена"
                     )
                 
-                owner_id, room_status = room
+                room_status, roulette_starts_at, selected_movie_id, room_name = room
                 
-                if user.id != owner_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Только владелец комнаты может запустить рулетку"
-                    )
+                # Проверяем, активна ли рулетка
+                is_roulette_active = room_id in active_roulettes
                 
-                if room_status != 'collecting':
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Рулетка уже запущена или завершена"
-                    )
+                # Рассчитываем оставшееся время
+                remaining_time = None
+                if roulette_starts_at and room_status == 'roulette':
+                    elapsed = (datetime.now() - roulette_starts_at).total_seconds()
+                    remaining_time = max(0, 10 - elapsed)
                 
-                # Проверяем, что есть хотя бы 2 предложенных фильма
+                # Получаем количество предложенных фильмов
                 cur.execute(
                     '''
                     SELECT COUNT(*) FROM cinema.suggested_movie 
-                    WHERE room_id = %s AND is_active = TRUE AND in_roulette = TRUE
+                    WHERE room_id = %s AND is_active = TRUE
                     ''',
                     (room_id,)
                 )
                 movies_count = cur.fetchone()[0]
                 
-                if movies_count < 2:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Нужно как минимум 2 предложенных фильма. Сейчас: {movies_count}"
-                    )
-                
-                # Обновляем статус комнаты и время начала рулетки
-                roulette_start_time = datetime.now()
-                cur.execute(
-                    '''
-                    UPDATE cinema.room 
-                    SET status = 'roulette', roulette_starts_at = %s
-                    WHERE id = %s
-                    ''',
-                    (roulette_start_time, room_id)
-                )
-                
-                # Отправляем уведомления всем участникам
-                cur.execute(
-                    '''
-                    SELECT u.id FROM cinema.user u
-                    JOIN cinema.room_participant rp ON u.id = rp.user_id
-                    WHERE rp.room_id = %s AND rp.is_active = TRUE
-                    ''',
-                    (room_id,)
-                )
-                participants = cur.fetchall()
-                
-                for participant in participants:
+                # Получаем информацию о выбранном фильме если есть
+                selected_movie_info = None
+                if selected_movie_id:
                     cur.execute(
                         '''
-                        INSERT INTO cinema.notification 
-                        (user_id, room_id, title, message, type)
-                        VALUES (%s, %s, %s, %s, %s)
+                        SELECT title, poster_url FROM cinema.movie 
+                        WHERE id = %s
                         ''',
-                        (participant[0], room_id, "Рулетка запущена!",
-                         "Владелец комнаты запустил выбор фильма. Результат будет через 10 секунд!", 
-                         "roulette_start")
+                        (selected_movie_id,)
                     )
-                
-                conn.commit()
-                
-                # Запускаем асинхронную задачу для выбора фильма
-                asyncio.create_task(run_roulette_selection(room_id, roulette_start_time))
+                    movie = cur.fetchone()
+                    if movie:
+                        selected_movie_info = {
+                            "title": movie[0],
+                            "poster_url": movie[1]
+                        }
                 
                 return {
-                    "message": "Рулетка запущена! Результат будет через 10 секунд",
-                    "roulette_starts_at": roulette_start_time.isoformat(),
+                    "room_id": room_id,
+                    "room_name": room_name,
+                    "status": room_status,
+                    "is_roulette_active": is_roulette_active,
+                    "roulette_starts_at": roulette_starts_at,
+                    "remaining_time": remaining_time,
                     "movies_count": movies_count,
-                    "spin_duration": ROULETTE_SPIN_TIME
+                    "selected_movie": selected_movie_info
                 }
                 
     except HTTPException:
@@ -1603,8 +1919,96 @@ def start_roulette(room_id: int, user: User = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при запуске рулетки: {str(e)}"
+            detail=f"Ошибка при получении статуса рулетки: {str(e)}"
         )
+
+@app.get("/debug/roulette-info/rooms/{room_id}")
+def debug_roulette_info(room_id: int):
+    """Отладочный эндпоинт для получения информации о рулетке"""
+    try:
+        with psycopg2.connect(**db_conn_dict) as conn:
+            with conn.cursor() as cur:
+                # Информация о комнате
+                cur.execute(
+                    '''
+                    SELECT id, name, status, owner_id, 
+                           roulette_starts_at, selected_movie_id
+                    FROM cinema.room WHERE id = %s
+                    ''',
+                    (room_id,)
+                )
+                room = cur.fetchone()
+                
+                if not room:
+                    return {"error": "Комната не найдена"}
+                
+                room_id, room_name, room_status, owner_id, roulette_starts_at, selected_movie_id = room
+                
+                # Предложенные фильмы
+                cur.execute(
+                    '''
+                    SELECT sm.id, m.title, u.name, sm.is_active, sm.in_roulette
+                    FROM cinema.suggested_movie sm
+                    JOIN cinema.movie m ON sm.movie_id = m.id
+                    JOIN cinema.user u ON sm.user_id = u.id
+                    WHERE sm.room_id = %s
+                    ORDER BY sm.id
+                    ''',
+                    (room_id,)
+                )
+                suggestions = cur.fetchall()
+                
+                # Участники
+                cur.execute(
+                    '''
+                    SELECT u.id, u.name, rp.role, rp.is_active
+                    FROM cinema.room_participant rp
+                    JOIN cinema.user u ON rp.user_id = u.id
+                    WHERE rp.room_id = %s
+                    ORDER BY rp.joined_at
+                    ''',
+                    (room_id,)
+                )
+                participants = cur.fetchall()
+                
+                # Активные рулетки
+                active_roulettes_list = list(active_roulettes.keys())
+                
+                return {
+                    "room": {
+                        "id": room_id,
+                        "name": room_name,
+                        "status": room_status,
+                        "owner_id": owner_id,
+                        "roulette_starts_at": roulette_starts_at,
+                        "selected_movie_id": selected_movie_id
+                    },
+                    "suggestions": [
+                        {
+                            "id": s[0],
+                            "movie_title": s[1],
+                            "user_name": s[2],
+                            "is_active": s[3],
+                            "in_roulette": s[4]
+                        }
+                        for s in suggestions
+                    ],
+                    "participants": [
+                        {
+                            "id": p[0],
+                            "name": p[1],
+                            "role": p[2],
+                            "is_active": p[3]
+                        }
+                        for p in participants
+                    ],
+                    "active_roulettes": active_roulettes_list,
+                    "total_suggestions": len(suggestions),
+                    "active_suggestions": len([s for s in suggestions if s[3]])
+                }
+                
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/rooms/{room_id}/movie-suggestions")
 def get_movie_suggestions(room_id: int, user: User = Depends(get_current_user)):
