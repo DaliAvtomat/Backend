@@ -40,7 +40,7 @@ db_conn_dict = {
     'user': '',
     'password': '',
     'host': '',
-    'port': 5432,
+    'port': '',
     'options': "-c search_path=cinema"
 }
 
