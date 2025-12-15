@@ -1,291 +1,297 @@
-create schema cinema;
-
+CREATE SCHEMA cinema;
 
 -- 1. СУЩНОСТЬ РЕАЛЬНОГО МИРА: ПОЛЬЗОВАТЕЛЬ
-create table cinema."User"(
-    "UserId" serial primary key,
-    "Name" varchar(15) not null constraint user_name_length check (length("Name") between 1 and 15),
-    "Email" varchar(255) not null unique constraint valid_email_format check ("Email" ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
-    "PasswordHash" varchar(255) not null,
-    "Status" boolean default false,
-    "Time_registration" timestamp default current_timestamp,
-    "Profile_picture" varchar(255) default '',
-    "Overall_rating" decimal(3,2) default 0.00 constraint user_rating_range check ("Overall_rating" >= 0 and "Overall_rating" <= 10)
+CREATE TABLE cinema.user (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(15) NOT NULL CONSTRAINT user_name_length CHECK (LENGTH(name) BETWEEN 1 AND 15),
+    email VARCHAR(255) NOT NULL UNIQUE CONSTRAINT valid_email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
+    password_hash VARCHAR(255) NOT NULL,
+    is_active BOOLEAN DEFAULT FALSE,
+    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    profile_picture VARCHAR(255) DEFAULT '',
+    overall_rating DECIMAL(3,2) DEFAULT 0.00 CONSTRAINT user_rating_range CHECK (overall_rating >= 0 AND overall_rating <= 10)
 );
 
 -- 2. СУЩНОСТЬ РЕАЛЬНОГО МИРА: ФИЛЬМ
-create table cinema."Movie"(
-    "MovieID" serial primary key,
-    "Title" varchar(255) not null,
-    "Description" text,
-    "Duration" int constraint positive_duration check ("Duration" > 0),
-    "Release_year" int constraint valid_release_year check ("Release_year" between 1888 and extract(year from current_date) + 5),
-    "Poster_url" varchar(255)
+CREATE TABLE cinema.movie (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    duration INT CONSTRAINT positive_duration CHECK (duration > 0),
+    release_year INT CONSTRAINT valid_release_year CHECK (release_year BETWEEN 1888 AND EXTRACT(YEAR FROM CURRENT_DATE) + 5),
+    poster_url VARCHAR(255)
 );
 
 -- 3. СУЩНОСТЬ РЕАЛЬНОГО МИРА: КОМНАТА
-create table cinema."Room"(
-    "RoomID" serial primary key,
-    "Name" varchar(15) not null constraint room_name_length check (length("Name") between 1 and 15),
-    "OwnerID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "Status" varchar(15) not null default 'collecting' constraint valid_status check ("Status" in ('collecting', 'roulette', 'watching', 'reviewing', 'finished')),
-    "Created_at" timestamp default current_timestamp,
-    "Roulette_starts_at" timestamp,
-    "Watching_starts_at" timestamp,
-    "Review_ends_at" timestamp,
-    "Selected_movie_id" int references cinema."Movie"("MovieID") on delete set null on update cascade,
-    "Selected_user_id" int references cinema."User"("UserId") on delete set null on update cascade,
-    "Open" boolean default true,
-    "Access_code" varchar(7) constraint access_code_length check (length("Access_code") between 4 and 7),
-    constraint logical_timeline check (
-        ("Roulette_starts_at" is null or "Created_at" <= "Roulette_starts_at") and
-        ("Watching_starts_at" is null or "Roulette_starts_at" <= "Watching_starts_at") and
-        ("Review_ends_at" is null or "Watching_starts_at" <= "Review_ends_at")
+CREATE TABLE cinema.room (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(15) NOT NULL CONSTRAINT room_name_length CHECK (LENGTH(name) BETWEEN 1 AND 15),
+    owner_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    status VARCHAR(15) NOT NULL DEFAULT 'collecting' CONSTRAINT valid_status CHECK (status IN ('collecting', 'roulette', 'watching', 'reviewing', 'finished')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    roulette_starts_at TIMESTAMP,
+    watching_starts_at TIMESTAMP,
+    review_ends_at TIMESTAMP,
+    selected_movie_id INT REFERENCES cinema.movie(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    selected_user_id INT REFERENCES cinema.user(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    is_open BOOLEAN DEFAULT TRUE,
+    access_code VARCHAR(7) CONSTRAINT access_code_length CHECK (LENGTH(access_code) BETWEEN 4 AND 7),
+    CONSTRAINT logical_timeline CHECK (
+        (roulette_starts_at IS NULL OR created_at <= roulette_starts_at) AND
+        (watching_starts_at IS NULL OR roulette_starts_at <= watching_starts_at) AND
+        (review_ends_at IS NULL OR watching_starts_at <= review_ends_at)
     ),
-    constraint selected_movie_consistency check (
-        ("Selected_movie_id" is not null and "Status" in ('watching', 'reviewing', 'finished')) or
-        ("Selected_movie_id" is null and "Status" in ('collecting', 'roulette'))
+    CONSTRAINT selected_movie_consistency CHECK (
+        (selected_movie_id IS NOT NULL AND status IN ('watching', 'reviewing', 'finished')) OR
+        (selected_movie_id IS NULL AND status IN ('collecting', 'roulette'))
     )
 );
 
 -- 4. УЧАСТНИКИ КОМНАТЫ
-create table cinema."Room_Participants"(
-    "RoomParticipantsID" serial primary key,
-    "RoomID" int not null references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "UserID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "JoinedAt" timestamp default current_timestamp,
-    "LeftAt" timestamp,
-    "Role" varchar(10) default 'member' constraint valid_role check ("Role" in ('member', 'moderator')),
-    "Is_active" boolean default true,
-    constraint logical_join_leave check ("JoinedAt" <= "LeftAt" or "LeftAt" is null)
+CREATE TABLE cinema.room_participant (
+    id SERIAL PRIMARY KEY,
+    room_id INT NOT NULL REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    left_at TIMESTAMP,
+    role VARCHAR(10) DEFAULT 'member' CONSTRAINT valid_role CHECK (role IN ('member', 'moderator')),
+    is_active BOOLEAN DEFAULT TRUE,
+    CONSTRAINT logical_join_leave CHECK (joined_at <= left_at OR left_at IS NULL)
 );
+
 -- Partial unique index для активных участников
-create unique index unique_active_room_user on cinema."Room_Participants" ("RoomID", "UserID") where "Is_active" = true;
+CREATE UNIQUE INDEX unique_active_room_user ON cinema.room_participant (room_id, user_id) WHERE is_active = TRUE;
 
 -- 5. ПРЕДЛОЖЕННЫЕ ФИЛЬМЫ
-create table cinema."Suggested_Movies"(
-    "SuggestedMoviesID" serial primary key,
-    "MovieID" int not null references cinema."Movie"("MovieID") on delete cascade on update cascade,
-    "RoomID" int not null references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "UserID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "Suggested_at" timestamp default current_timestamp,
-    "Description" text,
-    "Is_active" boolean default true,
-    "In_roulette" boolean default true
+CREATE TABLE cinema.suggested_movie (
+    id SERIAL PRIMARY KEY,
+    movie_id INT NOT NULL REFERENCES cinema.movie(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    room_id INT NOT NULL REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    suggested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    in_roulette BOOLEAN DEFAULT TRUE
 );
+
 -- Partial unique index для активных предложений
-create unique index unique_active_suggestion on cinema."Suggested_Movies" ("RoomID", "UserID") where "Is_active" = true;
+CREATE UNIQUE INDEX unique_active_suggestion ON cinema.suggested_movie (room_id, user_id) WHERE is_active = TRUE;
 
 -- 6. ИСТОРИЯ РУЛЕТКИ
-create table cinema."Roulette_History"(
-    "RouletteHistoryID" serial primary key,
-    "RoomID" int not null references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "Selected_movie_id" int not null references cinema."Movie"("MovieID") on delete cascade on update cascade,
-    "Selected_user_id" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "Candidates_count" int not null constraint positive_candidates check ("Candidates_count" > 0),
-    "Roulette_at" timestamp default current_timestamp,
-    "Spin_duration" int constraint positive_spin_duration check ("Spin_duration" > 0)
+CREATE TABLE cinema.roulette_history (
+    id SERIAL PRIMARY KEY,
+    room_id INT NOT NULL REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    selected_movie_id INT NOT NULL REFERENCES cinema.movie(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    selected_user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    candidates_count INT NOT NULL CONSTRAINT positive_candidates CHECK (candidates_count > 0),
+    roulette_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    spin_duration INT CONSTRAINT positive_spin_duration CHECK (spin_duration > 0)
 );
 
 -- 7. ОТЗЫВЫ И ОЦЕНКИ
-create table cinema."Reviews"(
-    "ReviewID" serial primary key,
-    "MovieID" int not null references cinema."Movie"("MovieID") on delete cascade on update cascade,
-    "RoomID" int not null references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "FromUserID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "ToUserID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "Rating" int not null constraint valid_rating check ("Rating" between 1 and 10),
-    "Comment" text,
-    "Reviewed_at" timestamp default current_timestamp,
-    constraint no_self_review check ("FromUserID" != "ToUserID")
+CREATE TABLE cinema.review (
+    id SERIAL PRIMARY KEY,
+    movie_id INT NOT NULL REFERENCES cinema.movie(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    room_id INT NOT NULL REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    from_user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    to_user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    rating INT NOT NULL CONSTRAINT valid_rating CHECK (rating BETWEEN 1 AND 10),
+    comment TEXT,
+    reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT no_self_review CHECK (from_user_id != to_user_id)
 );
-create unique index unique_review_per_movie on cinema."Reviews" ("MovieID", "RoomID", "FromUserID");
+
+CREATE UNIQUE INDEX unique_review_per_movie ON cinema.review (movie_id, room_id, from_user_id);
 
 -- 8. ЖАНРЫ ФИЛЬМОВ
-create table cinema."Genres"(
-    "GenreID" serial primary key,
-    "Name" varchar(50) not null unique,
-    "Description" text
+CREATE TABLE cinema.genre (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL UNIQUE,
+    description TEXT
 );
 
 -- 9. СВЯЗЬ ФИЛЬМОВ И ЖАНРОВ
-create table cinema."Movie_Genres"(
-    "MovieGenreID" serial primary key,
-    "MovieID" int not null references cinema."Movie"("MovieID") on delete cascade on update cascade,
-    "GenreID" int not null references cinema."Genres"("GenreID") on delete cascade on update cascade,
-    constraint unique_movie_genre unique ("MovieID", "GenreID")
+CREATE TABLE cinema.movie_genre (
+    id SERIAL PRIMARY KEY,
+    movie_id INT NOT NULL REFERENCES cinema.movie(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    genre_id INT NOT NULL REFERENCES cinema.genre(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT unique_movie_genre UNIQUE (movie_id, genre_id)
 );
 
 -- 10. ИСТОРИЯ СЕАНСОВ
-create table cinema."Session_History"(
-    "SessionHistoryID" serial primary key,
-    "RoomID" int not null references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "MovieID" int not null references cinema."Movie"("MovieID") on delete cascade on update cascade,
-    "Suggested_by_user_id" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "Watched_at" timestamp default current_timestamp,
-    "Participants_count" int default 0 constraint non_negative_participants check ("Participants_count" >= 0),
-    "Average_rating" decimal(3,2) constraint valid_avg_rating check ("Average_rating" >= 0 and "Average_rating" <= 10),
-    "Total_reviews" int default 0 constraint non_negative_reviews check ("Total_reviews" >= 0)
+CREATE TABLE cinema.session_history (
+    id SERIAL PRIMARY KEY,
+    room_id INT NOT NULL REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    movie_id INT NOT NULL REFERENCES cinema.movie(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    suggested_by_user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    watched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    participants_count INT DEFAULT 0 CONSTRAINT non_negative_participants CHECK (participants_count >= 0),
+    average_rating DECIMAL(3,2) CONSTRAINT valid_avg_rating CHECK (average_rating >= 0 AND average_rating <= 10),
+    total_reviews INT DEFAULT 0 CONSTRAINT non_negative_reviews CHECK (total_reviews >= 0)
 );
 
 -- 11. УВЕДОМЛЕНИЯ
-create table cinema."Notifications"(
-    "NotificationID" serial primary key,
-    "UserID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "RoomID" int references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "Title" varchar(100) not null,
-    "Message" text not null,
-    "Type" varchar(20) constraint valid_notification_type check ("Type" in ('invite', 'roulette_start', 'movie_selected', 'review_time', 'room_ended')),
-    "Is_read" boolean default false,
-    "Created_at" timestamp default current_timestamp
+CREATE TABLE cinema.notification (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    room_id INT REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    title VARCHAR(100) NOT NULL,
+    message TEXT NOT NULL,
+    type VARCHAR(20) CONSTRAINT valid_notification_type CHECK (type IN ('invite', 'roulette_start', 'movie_selected', 'review_time', 'room_ended')),
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 12. СТАТИСТИКА ПОЛЬЗОВАТЕЛЕЙ
-create table cinema."User_Stats"(
-    "UserStatsID" serial primary key,
-    "UserID" int not null unique references cinema."User"("UserId") on delete cascade on update cascade,
-    "Movies_suggested" int default 0 constraint non_negative_suggested check ("Movies_suggested" >= 0),
-    "Movies_selected" int default 0 constraint non_negative_selected check ("Movies_selected" >= 0),
-    "Total_ratings_received" int default 0 constraint non_negative_ratings check ("Total_ratings_received" >= 0),
-    "Last_activity" timestamp default current_timestamp
+CREATE TABLE cinema.user_statistic (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL UNIQUE REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    movies_suggested INT DEFAULT 0 CONSTRAINT non_negative_suggested CHECK (movies_suggested >= 0),
+    movies_selected INT DEFAULT 0 CONSTRAINT non_negative_selected CHECK (movies_selected >= 0),
+    total_ratings_received INT DEFAULT 0 CONSTRAINT non_negative_ratings CHECK (total_ratings_received >= 0),
+    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 13. ТАБЛИЦА ЧАТА КОМНАТЫ
-create table cinema."Room_Chat"(
-    "ChatID" serial primary key,
-    "RoomID" int not null references cinema."Room"("RoomID") on delete cascade on update cascade,
-    "UserID" int not null references cinema."User"("UserId") on delete cascade on update cascade,
-    "Message" text not null constraint non_empty_message check (length(trim("Message")) > 0),
-    "Sent_at" timestamp default current_timestamp,
-    "Message_type" varchar(20) default 'text' constraint valid_message_type check ("Message_type" in ('text', 'system', 'event')),
-    "Reply_to_ChatID" int references cinema."Room_Chat"("ChatID") on delete set null, -- для ответов на сообщения
-    "Is_edited" boolean default false,
-    "Edited_at" timestamp
+CREATE TABLE cinema.room_chat (
+    id SERIAL PRIMARY KEY,
+    room_id INT NOT NULL REFERENCES cinema.room(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    user_id INT NOT NULL REFERENCES cinema.user(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    message TEXT NOT NULL CONSTRAINT non_empty_message CHECK (LENGTH(TRIM(message)) > 0),
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    message_type VARCHAR(20) DEFAULT 'text' CONSTRAINT valid_message_type CHECK (message_type IN ('text', 'system', 'event')),
+    reply_to_id INT REFERENCES cinema.room_chat(id) ON DELETE SET NULL,
+    is_edited BOOLEAN DEFAULT FALSE,
+    edited_at TIMESTAMP
 );
 
-
-
 -- Индексы для производительности
-create index idx_room_status on cinema."Room"("Status");
-create index idx_room_owner on cinema."Room"("OwnerID");
-create index idx_movie_title on cinema."Movie"("Title");
-create index idx_reviews_rating on cinema."Reviews"("Rating");
-create index idx_user_email on cinema."User"("Email");
-create index idx_suggested_movies_room on cinema."Suggested_Movies"("RoomID");
-create index idx_room_participants_active on cinema."Room_Participants"("Is_active");
-create index idx_suggested_movies_active on cinema."Suggested_Movies"("Is_active");
-create index idx_roulette_history_room on cinema."Roulette_History"("RoomID");
-create index idx_reviews_touser on cinema."Reviews"("ToUserID");
-CREATE INDEX idx_room_participants_user ON cinema."Room_Participants"("UserID");
-CREATE INDEX idx_room_participants_room_user ON cinema."Room_Participants"("RoomID", "UserID");
-CREATE INDEX idx_suggested_movies_user ON cinema."Suggested_Movies"("UserID");
-CREATE INDEX idx_reviews_from_user ON cinema."Reviews"("FromUserID");
-CREATE INDEX idx_reviews_movie_room ON cinema."Reviews"("MovieID", "RoomID");
-CREATE INDEX idx_room_created_at ON cinema."Room"("Created_at");
-CREATE INDEX idx_notifications_user_unread ON cinema."Notifications"("UserID", "Is_read");
-create index idx_room_chat_room on cinema."Room_Chat"("RoomID");
-create index idx_room_chat_timestamp on cinema."Room_Chat"("Sent_at");
-create index idx_room_chat_user on cinema."Room_Chat"("UserID");
-CREATE INDEX idx_room_chat_room_timestamp ON cinema."Room_Chat"("RoomID", "Sent_at");
-CREATE INDEX idx_room_chat_reply ON cinema."Room_Chat"("Reply_to_ChatID");
+CREATE INDEX idx_room_status ON cinema.room(status);
+CREATE INDEX idx_room_owner ON cinema.room(owner_id);
+CREATE INDEX idx_movie_title ON cinema.movie(title);
+CREATE INDEX idx_review_rating ON cinema.review(rating);
+CREATE INDEX idx_user_email ON cinema.user(email);
+CREATE INDEX idx_suggested_movie_room ON cinema.suggested_movie(room_id);
+CREATE INDEX idx_room_participant_active ON cinema.room_participant(is_active);
+CREATE INDEX idx_suggested_movie_active ON cinema.suggested_movie(is_active);
+CREATE INDEX idx_roulette_history_room ON cinema.roulette_history(room_id);
+CREATE INDEX idx_review_to_user ON cinema.review(to_user_id);
+CREATE INDEX idx_room_participant_user ON cinema.room_participant(user_id);
+CREATE INDEX idx_room_participant_room_user ON cinema.room_participant(room_id, user_id);
+CREATE INDEX idx_suggested_movie_user ON cinema.suggested_movie(user_id);
+CREATE INDEX idx_review_from_user ON cinema.review(from_user_id);
+CREATE INDEX idx_review_movie_room ON cinema.review(movie_id, room_id);
+CREATE INDEX idx_room_created_at ON cinema.room(created_at);
+CREATE INDEX idx_notification_user_unread ON cinema.notification(user_id, is_read);
+CREATE INDEX idx_room_chat_room ON cinema.room_chat(room_id);
+CREATE INDEX idx_room_chat_timestamp ON cinema.room_chat(sent_at);
+CREATE INDEX idx_room_chat_user ON cinema.room_chat(user_id);
+CREATE INDEX idx_room_chat_room_timestamp ON cinema.room_chat(room_id, sent_at);
+CREATE INDEX idx_room_chat_reply ON cinema.room_chat(reply_to_id);
 
 -- Отображения
 -- Активные комнаты с детальной статистикой
-CREATE VIEW cinema."Active_Rooms_View" AS
+CREATE VIEW cinema.active_rooms_view AS
 SELECT 
-    r."RoomID", r."Name", r."Status", r."Open", r."Created_at",
-    u."Name" as "OwnerName",
-    COUNT(DISTINCT rp."UserID") as "ParticipantsCount",
-    COUNT(DISTINCT sm."MovieID") as "SuggestedMoviesCount"
-FROM cinema."Room" r
-JOIN cinema."User" u ON r."OwnerID" = u."UserId"
-LEFT JOIN cinema."Room_Participants" rp ON r."RoomID" = rp."RoomID" AND rp."Is_active" = true
-LEFT JOIN cinema."Suggested_Movies" sm ON r."RoomID" = sm."RoomID" AND sm."Is_active" = true
-WHERE r."Status" != 'finished'
-GROUP BY r."RoomID", u."Name";
+    r.id AS room_id,
+    r.name AS room_name,
+    r.status,
+    r.is_open,
+    r.created_at,
+    u.name AS owner_name,
+    COUNT(DISTINCT rp.user_id) AS participants_count,
+    COUNT(DISTINCT sm.movie_id) AS suggested_movies_count
+FROM cinema.room r
+JOIN cinema.user u ON r.owner_id = u.id
+LEFT JOIN cinema.room_participant rp ON r.id = rp.room_id AND rp.is_active = TRUE
+LEFT JOIN cinema.suggested_movie sm ON r.id = sm.room_id AND sm.is_active = TRUE
+WHERE r.status != 'finished'
+GROUP BY r.id, u.name;
 
 -- Детальная статистика пользователей
-CREATE VIEW cinema."User_Stats_View" AS
+CREATE VIEW cinema.user_stats_view AS
 SELECT 
-    u."UserId", u."Name", u."Overall_rating", u."Time_registration",
-    us."Movies_suggested", us."Movies_selected", us."Total_ratings_received",
-    COUNT(DISTINCT r."RoomID") as "RoomsCreated",
-    COUNT(DISTINCT rp."RoomID") as "RoomsParticipated"
-FROM cinema."User" u
-LEFT JOIN cinema."User_Stats" us ON u."UserId" = us."UserID"
-LEFT JOIN cinema."Room" r ON u."UserId" = r."OwnerID"
-LEFT JOIN cinema."Room_Participants" rp ON u."UserId" = rp."UserID" AND rp."Is_active" = true
-GROUP BY u."UserId", us."Movies_suggested", us."Movies_selected", us."Total_ratings_received";
-
-select * from cinema."Active_Rooms_View";
-select * from cinema."User_Stats_View";
+    u.id AS user_id,
+    u.name AS user_name,
+    u.overall_rating,
+    u.registered_at,
+    us.movies_suggested,
+    us.movies_selected,
+    us.total_ratings_received,
+    COUNT(DISTINCT r.id) AS rooms_created,
+    COUNT(DISTINCT rp.room_id) AS rooms_participated
+FROM cinema.user u
+LEFT JOIN cinema.user_statistic us ON u.id = us.user_id
+LEFT JOIN cinema.room r ON u.id = r.owner_id
+LEFT JOIN cinema.room_participant rp ON u.id = rp.user_id AND rp.is_active = TRUE
+GROUP BY u.id, us.movies_suggested, us.movies_selected, us.total_ratings_received;
 
 -- Триггеры
 
--- Таблица для аудита изменений (триггер для логирования изменений)
-CREATE TABLE cinema."Audit_Log"(
-    "AuditID" serial primary key,
-    "TableName" varchar(50) not null,
-    "RecordID" int not null,
-    "Action" varchar(10) not null check ("Action" in ('INSERT', 'UPDATE', 'DELETE')),
-    "OldValues" jsonb,
-    "NewValues" jsonb,
-    "ChangedBy" int references cinema."User"("UserId"),
-    "ChangedAt" timestamp default current_timestamp
+-- Таблица для аудита изменений
+CREATE TABLE cinema.audit_log (
+    id SERIAL PRIMARY KEY,
+    table_name VARCHAR(50) NOT NULL,
+    record_id INT NOT NULL,
+    action VARCHAR(10) NOT NULL CHECK (action IN ('INSERT', 'UPDATE', 'DELETE')),
+    old_values JSONB,
+    new_values JSONB,
+    changed_by INT REFERENCES cinema.user(id),
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Автоматическое создание записи статистики при регистрации пользователя
 CREATE OR REPLACE FUNCTION cinema.create_user_stats()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO cinema."User_Stats" ("UserID") VALUES (NEW."UserId");
+    INSERT INTO cinema.user_statistic (user_id) VALUES (NEW.id);
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_create_user_stats
-    AFTER INSERT ON cinema."User"
+    AFTER INSERT ON cinema.user
     FOR EACH ROW EXECUTE FUNCTION cinema.create_user_stats();
 
--- Обновление Overall_rating при новой оценке
+-- Обновление overall_rating при новой оценке
 CREATE OR REPLACE FUNCTION cinema.update_user_rating()
 RETURNS TRIGGER AS $$
 BEGIN
-    UPDATE cinema."User" 
-    SET "Overall_rating" = (
-        SELECT AVG("Rating")::decimal(3,2)
-        FROM cinema."Reviews" 
-        WHERE "ToUserID" = NEW."ToUserID"
+    UPDATE cinema.user 
+    SET overall_rating = (
+        SELECT AVG(rating)::DECIMAL(3,2)
+        FROM cinema.review 
+        WHERE to_user_id = NEW.to_user_id
     )
-    WHERE "UserId" = NEW."ToUserID";
+    WHERE id = NEW.to_user_id;
     
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_update_user_rating
-    AFTER INSERT ON cinema."Reviews"
+    AFTER INSERT ON cinema.review
     FOR EACH ROW EXECUTE FUNCTION cinema.update_user_rating();
 
 -- Создание комнаты с автоматической генерацией кода доступа
 CREATE OR REPLACE FUNCTION cinema.create_room(
     room_name VARCHAR(15),
     owner_id INT,
-    is_open BOOLEAN DEFAULT true
+    is_open BOOLEAN DEFAULT TRUE
 ) RETURNS TABLE(room_id INT, access_code VARCHAR(7)) AS $$
 DECLARE
     new_room_id INT;
     generated_code VARCHAR(7);
 BEGIN
     -- Генерация случайного кода
-    generated_code := upper(substring(md5(random()::text) from 1 for 6));
+    generated_code := UPPER(SUBSTRING(MD5(RANDOM()::TEXT) FROM 1 FOR 6));
     
-    INSERT INTO cinema."Room" ("Name", "OwnerID", "Open", "Access_code")
+    INSERT INTO cinema.room (name, owner_id, is_open, access_code)
     VALUES (room_name, owner_id, is_open, generated_code)
-    RETURNING "RoomID" INTO new_room_id;
+    RETURNING id INTO new_room_id;
     
     -- Владелец автоматически становится участником
-    INSERT INTO cinema."Room_Participants" ("RoomID", "UserID", "Role")
+    INSERT INTO cinema.room_participant (room_id, user_id, role)
     VALUES (new_room_id, owner_id, 'moderator');
     
     RETURN QUERY SELECT new_room_id, generated_code;
@@ -293,18 +299,18 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Миграционная схема
-CREATE TABLE cinema."Schema_Version"(
-    "Version" int primary key,
-    "Description" text,
-    "AppliedAt" timestamp default current_timestamp
+CREATE TABLE cinema.schema_version (
+    version INT PRIMARY KEY,
+    description TEXT,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO cinema."Schema_Version" ("Version", "Description") 
+INSERT INTO cinema.schema_version (version, description) 
 VALUES (1, 'Initial schema setup');
 
 -- Тестовые данные
 -- Вставка тестовых жанров
-INSERT INTO cinema."Genres" ("Name", "Description") VALUES
+INSERT INTO cinema.genre (name, description) VALUES
 ('Action', 'Films with high-energy physical stunts and chases'),
 ('Comedy', 'Humorous and amusing films'),
 ('Drama', 'Serious, character-driven stories'),
@@ -315,5 +321,37 @@ INSERT INTO cinema."Genres" ("Name", "Description") VALUES
 ('Fantasy', 'Magical and supernatural elements');
 
 -- Тестовый пользователь
-INSERT INTO cinema."User" ("Name", "Email", "PasswordHash") 
+INSERT INTO cinema.user (name, email, password_hash) 
 VALUES ('Admin', 'admin@cinema.com', 'hashed_password');
+
+-- 1. Удаляем старый constraint (если он есть)
+ALTER TABLE cinema.room_participant 
+DROP CONSTRAINT IF EXISTS valid_role;
+
+-- 2. Создаем новый constraint с разрешением роли 'owner'
+ALTER TABLE cinema.room_participant 
+ADD CONSTRAINT valid_role CHECK (role IN ('member', 'moderator', 'owner'));
+
+ALTER TABLE cinema.movie 
+ADD COLUMN IF NOT EXISTS rating_kp DECIMAL(3,1),
+ADD COLUMN IF NOT EXISTS votes_kp INT;
+
+
+-- Добавляем поле last_updated для отслеживания изменений
+ALTER TABLE cinema."user" 
+ADD COLUMN IF NOT EXISTS last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+-- Создаем триггер для автоматического обновления last_updated
+CREATE OR REPLACE FUNCTION cinema.update_user_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.last_updated = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_update_user_timestamp ON cinema."user";
+CREATE TRIGGER trigger_update_user_timestamp
+    BEFORE UPDATE ON cinema."user"
+    FOR EACH ROW
+    EXECUTE FUNCTION cinema.update_user_timestamp();
