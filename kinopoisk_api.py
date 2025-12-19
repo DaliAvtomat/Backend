@@ -7,7 +7,7 @@ class KinopoiskAPI:
     def __init__(self):
         self.base_url = "https://kinopoiskapiunofficial.tech/api/v2.2"
         self.headers = {
-            "X-API-KEY": "",
+            "X-API-KEY": "напишите свой токен, после регистрации на сайте https://kinopoiskapiunofficial.tech/api/v2.2",
             "Content-Type": "application/json",
             "accept": "application/json"
         }
@@ -73,6 +73,10 @@ class KinopoiskAPI:
     
     def _format_movie_info(self, film_data: Dict[str, Any]) -> Dict[str, Any]:
         """Форматирует данные фильма в удобный вид"""
+        weburl = film_data.get("webUrl", False)
+        if weburl:
+            result = weburl.replace("https://www.", "https://www.gg")
+        else: result = False
         return {
             "id": film_data.get("kinopoiskId") or film_data.get("filmId"),
             "title": film_data.get("nameRu") or film_data.get("nameOriginal") or "Без названия",
@@ -90,7 +94,8 @@ class KinopoiskAPI:
             "type": film_data.get("type"),
             "age_rating": film_data.get("ratingAgeLimits"),
             "serial": film_data.get("serial", False),
-            "short_film": film_data.get("shortFilm", False)
+            "short_film": film_data.get("shortFilm", False),
+            "webUrl": result
         }
     
     async def get_film_sequels_and_prequels(self, film_id: int) -> List[Dict[str, Any]]:
